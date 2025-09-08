@@ -199,7 +199,7 @@ __host__ static inline CUtensorMap create_tensor_map(half* gmem_ptr, int global_
     uint32_t smem_box_stride[5] = {1, 1, 1, 1, 1};
 
     CUresult result = cuTensorMapEncodeTiled(
-        &tma_map, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 3, gmem_address, gmem_prob_shape,
+        &tma_map, CU_TENSOR_MAP_DATA_TYPE_FLOAT16, 3, gmem_address, gmem_prob_shape,
         gmem_prob_stride, smem_box_shape, smem_box_stride, CU_TENSOR_MAP_INTERLEAVE_NONE,
         swizzle ? CU_TENSOR_MAP_SWIZZLE_128B : CU_TENSOR_MAP_SWIZZLE_NONE, CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
 
@@ -217,5 +217,6 @@ __device__ __forceinline__ uint32_t pack_2float_to_1uint32(float num1, float num
 
     return *reinterpret_cast<uint32_t*>(&h);
 }
+
 
 #endif // UTILS_H
