@@ -132,12 +132,12 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
                     printf(" third: %d %d 1\n", blockId, iter);
                     wait(&emptyK[qidx], p);
                     expect_bytes(&fullK[qidx], (Bc * d)*sizeof(half)); 
-                    load_async(&sK[qidx*Bc*param.d], &tensorMapK, &fullK[qidx], /*col=*/0, /*row=*/(seq_id * param.Tc + iter) * Bc);
+                    load_async(&sK[qidx*Bc*d], &tensorMapK, &fullK[qidx], /*col=*/0, /*row=*/(seq_id * param.Tc + iter) * Bc);
                     printf(" third: %d %d 2\n", blockId, iter);
 
                     wait(&emptyV[qidx], p);
                     expect_bytes(&fullV[qidx], (Bc * d)*sizeof(half)); 
-                    load_async(&sV[qidx*Bc*param.d], &tensorMapV, &fullV[qidx], /*col=*/0, /*row=*/(seq_id * param.Tc + iter) * Bc);
+                    load_async(&sV[qidx*Bc*d], &tensorMapV, &fullV[qidx], /*col=*/0, /*row=*/(seq_id * param.Tc + iter) * Bc);
                     printf(" third: %d %d 3\n", blockId, iter);
                 }
             }
@@ -755,4 +755,5 @@ void run_flash_attention(
 
     printf("TIME: %f\n", time_elapsed);
 }
+
 #endif
