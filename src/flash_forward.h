@@ -220,10 +220,10 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
                     half* mma_sK = sK + qidx * Bc * param.d + k * MMA_K + lane_id % 16 * d + lane_id / 16 * 8;
                     #pragma unroll
                     for (int m = 0; m < Br / num_consumers / NUMWARPPERGROUP / MMA_M; m++){
-                        ldmatrix_x4(&a_frag[0], &mma_sQ[m*MMA_M*param.d]);
+                        ldmatrix_x4(&a_frag[0], &mma_sQ[m*MMA_M*d]);
                         #pragma unroll
                         for (int n = 0; n < Bc / MMA_N; n++){
-                            ldmatrix_x2(&b_frag[0], &mma_sK[n*MMA_N*param.d]);
+                            ldmatrix_x2(&b_frag[0], &mma_sK[n*MMA_N*d]);
                             mma16816(&c_frag[m][n][0], &a_frag[0], &b_frag[0]);
                         }
                     }
@@ -275,7 +275,7 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
                 // O = P * V
                 #pragma unroll
                 for (int m = 0; m < Br / num_consumers / NUMWARPPERGROUP / MMA_M; m++) {
-                    half* mma_sV = sV + qidx * Bc * param.d + lane_id % 16 * d;
+                    half* mma_sV = sV + qidx * Bc * d + lane_id % 16 * d;
                     #pragma unroll
                     for (int n = 0; n < d / MMA_N; n++) {
                         #pragma unroll
@@ -757,3 +757,4 @@ void run_flash_attention(
 }
 
 #endif
+
