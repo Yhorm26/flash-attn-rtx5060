@@ -334,8 +334,8 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
                     for (int k = 0; k < 4; k++) {
                         o_frag_half[k] = __float2half(o_frag[m][n][k]);
                     }
-                    asm volatile("stmatrix.sync.aligned.m8n8.x4.trans.shared::cta.b16 [%0], {%1, %2, %3, %4};"
-                                :: "r"(addr), "r"(data_ptr[0]), "r"(data_ptr[1]), "r"(data_ptr[2]), "r"(data_ptr[3]));
+                    asm volatile("stmatrix.sync.aligned.m8n8.x2.trans.shared::cta.b16 [%0], {%1, %2};"
+                                :: "r"(addr), "r"(data_ptr[0]), "r"(data_ptr[1]));
                 }
             }
  
@@ -757,4 +757,5 @@ void run_flash_attention(
 }
 
 #endif
+
 
