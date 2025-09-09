@@ -77,19 +77,19 @@ template<bool Is_dropout, bool Is_causal, bool Is_local, bool Has_alibi, int Br,
 __global__ 
 void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, const __grid_constant__ CUtensorMap tensorMapQ, const __grid_constant__ CUtensorMap tensorMapK, const __grid_constant__ CUtensorMap tensorMapV, const __grid_constant__ CUtensorMap tensorMapO){
     constexpr int num_consumers = NUM_THREADS / 128 - 1;
-    const int tx = threadIdx.x;
-    const int tid = tx % 128;
+    const int tid = threadIdx.x % 128;
     int warp_group_role = threadIdx.x / 128;
-    int warp_id = tx / WARP_SIZE, lane_id = tx % WARP_SIZE;
+    int warp_id = threadIdx.x / WARP_SIZE, lane_id = threadIdx.x % WARP_SIZE;
 
     extern __shared__ char shared_mem[];
-    // SMem<Br, Bc, d, QSIZE> &s = *reinterpret_cast<SMem<Br, Bc, d, QSIZE>*>(shared_mem);
-    SMem<Br, Bc, d, QSIZE> &s = *reinterpret_cast<SMem<Br, Bc, d, QSIZE>*>(reinterpret_cast<void*>((reinterpret_cast<uintptr_t>(shared_mem) + 127) & ~127));
+    SMem<Br, Bc, d, QSIZE> &s = *reinterpret_cast<SMem<Br, Bc, d, QSIZE>*>(shared_mem);
+    
     half *sQ = s.Q, *sK = s.K, *sV = s.V, *sO = s.O;
-    assert(reinterpret_cast<uintptr_t>(sQ) % 128 == 0);
+
     uint64_t *fullQ = &s.fullQ, *emptyQ = &s.emptyQ;
     uint64_t *fullK = s.fullK, *emptyK = s.emptyK;
     uint64_t *fullV = s.fullV, *emptyV = s.emptyV;
+
     if (threadIdx.x == 0) {
         init_barrier(fullQ, 0, 1);
         init_barrier(emptyQ, 0, num_consumers);
@@ -100,13 +100,27 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
             init_barrier(&fullV[i], 0, 1);
             init_barrier(&emptyV[i], 0, num_consumers);
         }
+        asm volatile("fence.proxy.async.shared::cta;\n" : :);
     }
-    asm volatile("barrier.cluster.arrive;\n" : :);
-    asm volatile("barrier.cluster.wait;\n" : :);
+
+    __syncthreads();
+
+    if (threadIdx.x == 0) {
+        printf("tx: %d  bx: %d 222\n", threadIdx.x, blockIdx.x);
+    }
+    // asm volatile("barrier.cluster.arrive;\n" : :);
+    // asm volatile("barrier.cluster.wait;\n" : :);
+
+    if (threadIdx.x == 0) {
+        printf("tx: %d  bx: %d 333\n", threadIdx.x, blockIdx.x);
+    }
 
     const int num_blocks_per_seq = param.Tr;
     Schedule<0, NUM_SM, Br, Bc, Is_causal, Is_local> schedule(param.B*param.N*param.Tr, blockIdx.x, param.N, num_blocks_per_seq, param.window_size_left);
 
+    if (threadIdx.x == 0) {
+        printf("warp_group_role: %d, tx: %d  bx: %d \n", warp_group_role, threadIdx.x, blockIdx.x);
+    }
     // producer
     if (warp_group_role == 0) {
         constexpr int num_regs = (num_consumers <= 2 ? 24 : 32);
@@ -118,8 +132,8 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
             int n_block_min, n_block_max, blockId = 0, seq_id; // 这里blockId 为0，是因为schedule里已经初始化第一次的位序了
             while (schedule.next(blockId, n_block_min, n_block_max, seq_id)) {
                 wait(emptyQ, p);
-                printf(" second2: %d\n", blockId);
                 expect_bytes(fullQ, (Br * d)*sizeof(half));
+                printf(" second2: %d\n", blockId);
                 load_async(&sQ[0], &tensorMapQ, fullQ, /*col=*/0, /*row=*/blockId * Br);
                 printf(" second3: %d\n", blockId);
 
@@ -145,8 +159,10 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
     }
     // consumer
     else{
+        if (blockIdx.x == 0 && threadIdx.x == 128) {printf(" consumer0: %d\n");}
         constexpr int num_regs = (num_consumers == 1 ? 256 : (num_consumers == 2 ? 240 : 160));
         warpgroup_reg_alloc<num_regs>();
+        if (blockIdx.x == 0 && threadIdx.x == 128) {printf(" consumer0: %d\n");}
 
         --warp_group_role;
         warp_id -= 4;
@@ -164,6 +180,7 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
         float row_m_prev[Br/num_consumers/NUMWARPPERGROUP/MMA_M][2];
         float row_l[Br/num_consumers/NUMWARPPERGROUP/MMA_M][2];
         float row_m[Br/num_consumers/NUMWARPPERGROUP/MMA_M][2];
+        if (blockIdx.x == 0 && threadIdx.x == 128) {printf(" consumer0: %d\n");}
 
         const int tile_size = Bc * d;
 
@@ -172,10 +189,12 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
         float    c_frag[Br/num_consumers/NUMWARPPERGROUP/MMA_M][Bc/MMA_N][4];
         uint32_t d_frag[Br/num_consumers/NUMWARPPERGROUP/MMA_M][Bc/MMA_N/2][4];
         float    o_frag[Br/num_consumers/NUMWARPPERGROUP/MMA_M][d/MMA_N][4];
+        if (blockIdx.x == 0 && threadIdx.x == 128) {printf(" consumer0: %d\n");}
 
         float sS[Br*Bc/num_consumers/128];
 
         int n_block_min, n_block_max, blockId = 0, seq_id;
+        if (blockIdx.x == 0 && tid == 0) {printf(" consumer4: %d\n");}
         while (schedule.next(blockId, n_block_min, n_block_max, seq_id)) {
             #pragma unroll
             for (int m = 0; m < Br/num_consumers/NUMWARPPERGROUP/MMA_M; m++) {
@@ -187,6 +206,7 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
                     o_frag[m][n][3] = 0.0f;
                 }
             }
+            if (blockIdx.x == 0 && tid == 0) {printf(" consumer5: %d\n");}
 
             #pragma unroll
             for (int i = 0; i < Br/num_consumers/NUMWARPPERGROUP/MMA_M; i++) {
@@ -196,11 +216,13 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
                     row_m_prev[i][j] = -INFINITY;
                 }
             }
+            if (blockIdx.x == 0 && tid == 0) {printf(" consumer6: %d\n");}
 
             curandStatePhilox4_32_10_t local_state;
             if constexpr (Is_dropout) {
                 local_state = param.states[blockId];
             }
+            if (blockIdx.x == 0 && tid == 0) {printf(" consumer7: %d\n");}
 
             wait(fullQ, p);
 
@@ -710,7 +732,7 @@ void run_flash_attention(
     }
     printf("SM COUNT : %d\n", prop.multiProcessorCount);
 
-    constexpr int NUM_SM = 26;
+    constexpr int NUM_SM = 1;
     constexpr int NUM_THREADS = 128*3;
     constexpr int Br = 128;
     constexpr int Bc = 256;
