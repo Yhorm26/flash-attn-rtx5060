@@ -25,16 +25,16 @@ struct Schedule;
 template<int NUM_SM, int Br, int Bc, bool Is_causal, bool Is_local>
 struct Schedule<0, NUM_SM, Br, Bc, Is_causal, Is_local> {
     int index;
-    int num_blocks_per_seq;
+    int num_blocks_per_head;
     int head_size;
     int window_size;
     int num_iter;
 
-    __device__ __forceinline__ Schedule(int num_iter, int blockIdx_x, int head_size, int num_blocks_per_seq, int window_size) {
+    __device__ __forceinline__ Schedule(int num_iter, int blockIdx_x, int head_size, int num_blocks_per_head, int window_size) {
         index = blockIdx_x;
         this->num_iter = num_iter;
         this->head_size = head_size;
-        this->num_blocks_per_seq = num_blocks_per_seq;
+        this->num_blocks_per_head = num_blocks_per_head;
         this->window_size = window_size;
     }
 
@@ -44,8 +44,8 @@ struct Schedule<0, NUM_SM, Br, Bc, Is_causal, Is_local> {
         }
         blockId = index;
         index += NUM_SM;
-        seq_id = blockId / num_blocks_per_seq;
-        int bx = blockId % num_blocks_per_seq;
+        seq_id = blockId / num_blocks_per_head;
+        int bx = blockId % num_blocks_per_head;
 
         n_block_min = !Is_local? 0 : max(0, ((bx * Br - window_size) / Bc));
         n_block_max = (head_size + Bc - 1) / Bc;
@@ -105,22 +105,11 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
 
     __syncthreads();
 
-    if (threadIdx.x == 0) {
-        printf("tx: %d  bx: %d 222\n", threadIdx.x, blockIdx.x);
-    }
     // asm volatile("barrier.cluster.arrive;\n" : :);
     // asm volatile("barrier.cluster.wait;\n" : :);
 
-    if (threadIdx.x == 0) {
-        printf("tx: %d  bx: %d 333\n", threadIdx.x, blockIdx.x);
-    }
+    Schedule<0, NUM_SM, Br, Bc, Is_causal, Is_local> schedule(param.B*param.N*param.Tr, blockIdx.x, param.S, param.Tr, param.window_size_left);
 
-    const int num_blocks_per_seq = param.Tr;
-    Schedule<0, NUM_SM, Br, Bc, Is_causal, Is_local> schedule(param.B*param.N*param.Tr, blockIdx.x, param.N, num_blocks_per_seq, param.window_size_left);
-
-    if (threadIdx.x == 0) {
-        printf("warp_group_role: %d, tx: %d  bx: %d \n", warp_group_role, threadIdx.x, blockIdx.x);
-    }
     // producer
     if (warp_group_role == 0) {
         constexpr int num_regs = (num_consumers <= 2 ? 24 : 32);
@@ -133,36 +122,28 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
             while (schedule.next(blockId, n_block_min, n_block_max, seq_id)) {
                 wait(emptyQ, p);
                 expect_bytes(fullQ, (Br * d)*sizeof(half));
-                printf(" second2: %d\n", blockId);
                 load_async(&sQ[0], &tensorMapQ, fullQ, /*col=*/0, /*row=*/blockId * Br);
-                printf(" second3: %d\n", blockId);
 
                 for (int iter = n_block_min; iter < n_block_max; iter++, qidx++) {
-                    printf(" third: %d %d 0\n", blockId, iter);
-                    if (qidx == QSIZE) {
-                        qidx = 0; 
-                        p ^= 1;
-                    }
-                    printf(" third: %d %d 1\n", blockId, iter);
+                    printf(" third: %d %d start\n", blockId, iter);
+                    if (qidx == QSIZE) { qidx = 0;  p ^= 1; }
                     wait(&emptyK[qidx], p);
                     expect_bytes(&fullK[qidx], (Bc * d)*sizeof(half)); 
                     load_async(&sK[qidx*Bc*d], &tensorMapK, &fullK[qidx], /*col=*/0, /*row=*/(seq_id * param.Tc + iter) * Bc);
-                    printf(" third: %d %d 2\n", blockId, iter);
+                    printf(" third: %d %d %d %d K\n", blockId, iter, qidx*Bc*d, (seq_id * param.Tc + iter) * Bc);
 
                     wait(&emptyV[qidx], p);
                     expect_bytes(&fullV[qidx], (Bc * d)*sizeof(half)); 
                     load_async(&sV[qidx*Bc*d], &tensorMapV, &fullV[qidx], /*col=*/0, /*row=*/(seq_id * param.Tc + iter) * Bc);
-                    printf(" third: %d %d 3\n", blockId, iter);
+                    printf(" third: %d %d V\n", blockId, iter);
                 }
             }
         }
     }
     // consumer
     else{
-        if (blockIdx.x == 0 && threadIdx.x == 128) {printf(" consumer0: %d\n");}
         constexpr int num_regs = (num_consumers == 1 ? 256 : (num_consumers == 2 ? 240 : 160));
         warpgroup_reg_alloc<num_regs>();
-        if (blockIdx.x == 0 && threadIdx.x == 128) {printf(" consumer0: %d\n");}
 
         --warp_group_role;
         warp_id -= 4;
@@ -180,7 +161,6 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
         float row_m_prev[Br/num_consumers/NUMWARPPERGROUP/MMA_M][2];
         float row_l[Br/num_consumers/NUMWARPPERGROUP/MMA_M][2];
         float row_m[Br/num_consumers/NUMWARPPERGROUP/MMA_M][2];
-        if (blockIdx.x == 0 && threadIdx.x == 128) {printf(" consumer0: %d\n");}
 
         const int tile_size = Bc * d;
 
@@ -189,13 +169,12 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
         float    c_frag[Br/num_consumers/NUMWARPPERGROUP/MMA_M][Bc/MMA_N][4];
         uint32_t d_frag[Br/num_consumers/NUMWARPPERGROUP/MMA_M][Bc/MMA_N/2][4];
         float    o_frag[Br/num_consumers/NUMWARPPERGROUP/MMA_M][d/MMA_N][4];
-        if (blockIdx.x == 0 && threadIdx.x == 128) {printf(" consumer0: %d\n");}
 
         float sS[Br*Bc/num_consumers/128];
 
         int n_block_min, n_block_max, blockId = 0, seq_id;
-        if (blockIdx.x == 0 && tid == 0) {printf(" consumer4: %d\n");}
         while (schedule.next(blockId, n_block_min, n_block_max, seq_id)) {
+            // 初始化结果
             #pragma unroll
             for (int m = 0; m < Br/num_consumers/NUMWARPPERGROUP/MMA_M; m++) {
                 #pragma unroll
@@ -206,7 +185,6 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
                     o_frag[m][n][3] = 0.0f;
                 }
             }
-            if (blockIdx.x == 0 && tid == 0) {printf(" consumer5: %d\n");}
 
             #pragma unroll
             for (int i = 0; i < Br/num_consumers/NUMWARPPERGROUP/MMA_M; i++) {
@@ -216,30 +194,32 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
                     row_m_prev[i][j] = -INFINITY;
                 }
             }
-            if (blockIdx.x == 0 && tid == 0) {printf(" consumer6: %d\n");}
 
             curandStatePhilox4_32_10_t local_state;
-            if constexpr (Is_dropout) {
-                local_state = param.states[blockId];
-            }
-            if (blockIdx.x == 0 && tid == 0) {printf(" consumer7: %d\n");}
+            if constexpr (Is_dropout) { local_state = param.states[blockId]; }
 
             wait(fullQ, p);
 
             const float alibi_slope = !Has_alibi ? 0.0f : param.alibi_slopes_ptr[seq_id];
             
             for (int iter = n_block_min; iter < n_block_max; iter++, qidx++) {
-                if (qidx == QSIZE) {
-                    qidx = 0;
-                    p ^= 1; 
-                }
+                if (qidx == QSIZE) {qidx = 0; p ^= 1; }
                 wait(&fullK[qidx], p);
+
+                for (int i = 0; i < Br/num_consumers/NUMWARPPERGROUP/MMA_M; i++) {
+                    for (int j = 0; j < Bc/MMA_N; j++) {
+                        c_frag[i][j][0] = 0.0f;
+                        c_frag[i][j][1] = 0.0f; 
+                        c_frag[i][j][2] = 0.0f; 
+                        c_frag[i][j][3] = 0.0f; 
+                    }
+                }
 
                 // S = Q * K
                 #pragma unroll
-                for (int k = 0; k < param.d / MMA_K; k++){
-                    half* mma_sQ = sQ + warp_id * Br / num_consumers / NUMWARPPERGROUP + k * MMA_K + lane_id % 16 * d + lane_id / 16 * 8;
-                    half* mma_sK = sK + qidx * Bc * param.d + k * MMA_K + lane_id % 16 * d + lane_id / 16 * 8;
+                for (int k = 0; k < d / MMA_K; k++){
+                    half* mma_sQ = sQ + warp_id * Br / num_consumers / NUMWARPPERGROUP * d + k * MMA_K + lane_id % 16 * d + lane_id / 16 * 8;
+                    half* mma_sK = sK + qidx * Bc * d + k * MMA_K + lane_id % 16 * d;
                     #pragma unroll
                     for (int m = 0; m < Br / num_consumers / NUMWARPPERGROUP / MMA_M; m++){
                         ldmatrix_x4(&a_frag[0], &mma_sQ[m*MMA_M*d]);
@@ -250,9 +230,12 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
                         }
                     }
                 }
-
+                if (threadIdx.x == 128) {printf("calculate Q*K\n");};
+                if (threadIdx.x == 128) {
+                    printf("c_frag: %f %f %f %f\n", c_frag[0][0][0], c_frag[0][0][1], c_frag[0][0][2], c_frag[0][0][3]);
+                }
                 if (tid == 0){
-                    arrive(emptyQ);
+                    if (iter == n_block_max - 1)    arrive(emptyQ);
                     arrive(&emptyK[qidx]);
                 }
 
@@ -262,6 +245,7 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
                 );
 
                 apply_softmax<num_consumers, Br, Bc>(c_frag, row_m_prev, row_m, row_l, row_l_prev);
+                if (threadIdx.x == 128) {printf("calculate softmax\n");};
 
                 if constexpr (Is_dropout) {
                     #pragma unroll
@@ -281,6 +265,7 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
                         }
                     }
                 }
+                if (threadIdx.x == 128) {printf("calculate dropout\n");};
 
                 // 转换矩阵 P 的类型，为了后续的 tensor core 矩阵乘
                 #pragma unroll
@@ -291,6 +276,17 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
                         d_frag[i][j][1] = pack_2float_to_1uint32(c_frag[i][2*j][2],   c_frag[i][2*j][3]);
                         d_frag[i][j][2] = pack_2float_to_1uint32(c_frag[i][2*j+1][0], c_frag[i][2*j+1][1]);
                         d_frag[i][j][3] = pack_2float_to_1uint32(c_frag[i][2*j+1][2], c_frag[i][2*j+1][3]);
+                    }
+                }
+
+                wait(&fullV[qidx], p);
+
+                for (int i = 0; i < Br/num_consumers/NUMWARPPERGROUP/MMA_M; i++) {
+                    for (int j = 0; j < Bc/MMA_N; j++) {
+                        c_frag[i][j][0] = 0.0f;
+                        c_frag[i][j][1] = 0.0f; 
+                        c_frag[i][j][2] = 0.0f; 
+                        c_frag[i][j][3] = 0.0f; 
                     }
                 }
 
@@ -313,6 +309,7 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
                         o_frag[m][n][3] = o_frag[m][n][3] * __expf(row_m_prev[m][1] - row_m[m][1]) + c_frag[0][0][3];
                     }
                 }
+                if (threadIdx.x == 128) {printf("calculate P*V\n");};
 
                 if (tid == 0) {
                     arrive(&emptyV[qidx]);
@@ -341,7 +338,7 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
             }
 
             // 将 O 保存至共享内存
-            half* block_sO = sO + warp_id*Br/num_consumers/NUMWARPPERGROUP;
+            half* block_sO = sO + warp_id*Br/num_consumers/NUMWARPPERGROUP*d;
             uint32_t tid_offset = lane_id % 16 * d + lane_id / 16 * 8;
             uint32_t base_addr = static_cast<uint32_t>(__cvta_generic_to_shared(block_sO)) + tid_offset * sizeof(half);
 
@@ -360,12 +357,14 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
                                 :: "r"(addr), "r"(data_ptr[0]), "r"(data_ptr[1]));
                 }
             }
- 
+            if (threadIdx.x == 128) {printf("store O to shm\n");};
+
             asm volatile("bar.sync %0, 128;\n" ::"r"(warp_group_role + 2) : "memory");
             if (tid == 0) {
                 store_async(&tensorMapO, block_sO, blockId * Br, 0);
                 asm volatile("cp.async.bulk.commit_group;");
             }
+            if (threadIdx.x == 128) {printf("store O to global\n");};
 
             if constexpr (Is_dropout) {
                 param.states[blockId] = local_state;
@@ -757,11 +756,11 @@ void run_flash_attention(
     param.dropout_prob      = dropout_prob;
     param.states            = states;
 
+    float time_elapsed=0.0;
     cudaEvent_t start,stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
     cudaEventRecord(start,0);
-    float time_elapsed=0.0;
 
     run_kernel<Br, Bc, NUM_SM, NUM_THREADS, NUM_CONSUMERS, QSIZE>(param, Is_dropout, Is_causal, Is_local, Has_alibi);
 
