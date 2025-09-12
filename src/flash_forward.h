@@ -334,6 +334,9 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
                 }
             }
 
+            if (blockId ==0 && threadIdx.x == 128)    printf("%f %f %f %f\n", __half2float(o_frag[0][0][0]), __half2float(o_frag[0][0][1]), __half2float(o_frag[0][0][2]), __half2float(o_frag[0][0][3]));
+            if (blockId ==0 && threadIdx.x == 128)    printf("%f %f %f %f\n", row_l[0][0], row_l[0][1], row_m[0][0], row_m[0][1]);
+
             // 将 O 保存至共享内存
             half* block_sO = sO + warp_group_role * Br / num_consumers * d;
             uint32_t tid_offset = warp_id % NUMWARPPERGROUP * Br / num_consumers / NUMWARPPERGROUP * d + lane_id % 16 * d;
