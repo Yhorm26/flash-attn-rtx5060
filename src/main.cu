@@ -13,7 +13,7 @@
 #include "flash_forward.h"
 
 
-void verify(half* O, half* O_host, const int batch_size, const int n_heads, const int seq_len, const int head_dim, half range_of_error);
+void verify(half* O, half* O_host, const int batch_size, const int n_heads, const int seq_len, const int head_dim, float range_of_error);
 
 void attention_forward_cpu(const half* Q, const half* K, const half* V, float softmax_scale, const int batch_size, const int n_heads, const int seq_len, 
     const int head_dim, half* output, const bool use_causal_mask = false, int window_size = -1, const float* alibi_slopes = nullptr);
@@ -68,9 +68,12 @@ int main(){
     std::uniform_real_distribution<float> distribution(0.0f, 10.0f);
     for(int i = 0; i < batch_size*n_heads*seq_len*head_dim; i++)
     {
-        Q[i] = distribution(generator);
-        K[i] = distribution(generator);
-        V[i] = distribution(generator);
+        // Q[i] = distribution(generator);
+        // K[i] = distribution(generator);
+        // V[i] = distribution(generator);
+        Q[i] = 1.0f;
+        K[i] = 1.0f;
+        V[i] = 1.0f;
         O_half[i] = 0;
 
         Q_half[i] = __float2half(Q[i]);
@@ -131,7 +134,6 @@ int main(){
     return 0;
 }
 
-
 void verify(
     half* O, 
     half* O_host,
@@ -139,24 +141,23 @@ void verify(
     const int n_heads,
     const int seq_len,
     const int head_dim,
-    half range_of_error)
+    float range_of_error)
 {
     int error=0;
-    printf("===================start verfiy===================\n");
+    printf("===================start verify===================\n");
     for(int i=0;i<batch_size*n_heads*seq_len*head_dim;i++)
     {
-        half device_out = __float2half(O_host[i]);
-        half diff = __float2half(fabs(device_out - O[i]));
-        if((diff)/O[i] > range_of_error || std::isnan(device_out) || std::isinf(device_out))
+        float device_out = __float2half(O_host[i]);
+        float host_out = __float2half(O[i]);
+        if((fabs(device_out - host_out))/host_out > range_of_error || std::isnan(device_out) || std::isinf(device_out))
         {
-            printf("error, postion:%d, gpuvalue:%f, cpuvalue:%f\n", i, device_out, O[i]);
+            printf("error, postion:%d, gpuvalue:%f, cpuvalue:%f\n", i, device_out, host_out);
             error++;
-            // break;
+            break;
         }        
     }
     printf("==================finish,error:%d==================\n",error);
 }
-
 
 void attention_forward_cpu(
     const half* Q,

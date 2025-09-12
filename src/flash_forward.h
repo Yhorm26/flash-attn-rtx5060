@@ -115,27 +115,26 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
         constexpr int num_regs = (num_consumers <= 2 ? 24 : 32);
         warpgroup_reg_dealloc<num_regs>();
         if (tid == 0){
+            int q = 0;
             int p = 0;
             int qidx = 0;
 
             int n_block_min, n_block_max, blockId = 0, seq_id; // 这里blockId 为0，是因为schedule里已经初始化第一次的位序了
             while (schedule.next(blockId, n_block_min, n_block_max, seq_id)) {
-                wait(emptyQ, p);
+                wait(emptyQ, q);
+                q ^= 1;
                 expect_bytes(fullQ, (Br * d)*sizeof(half));
                 load_async(&sQ[0], &tensorMapQ, fullQ, /*col=*/0, /*row=*/blockId * Br);
 
                 for (int iter = n_block_min; iter < n_block_max; iter++, qidx++) {
-                    printf(" third: %d %d start\n", blockId, iter);
                     if (qidx == QSIZE) { qidx = 0;  p ^= 1; }
                     wait(&emptyK[qidx], p);
                     expect_bytes(&fullK[qidx], (Bc * d)*sizeof(half)); 
                     load_async(&sK[qidx*Bc*d], &tensorMapK, &fullK[qidx], /*col=*/0, /*row=*/(seq_id * param.Tc + iter) * Bc);
-                    printf(" third: %d %d %d %d K\n", blockId, iter, qidx*Bc*d, (seq_id * param.Tc + iter) * Bc);
 
                     wait(&emptyV[qidx], p);
                     expect_bytes(&fullV[qidx], (Bc * d)*sizeof(half)); 
                     load_async(&sV[qidx*Bc*d], &tensorMapV, &fullV[qidx], /*col=*/0, /*row=*/(seq_id * param.Tc + iter) * Bc);
-                    printf(" third: %d %d V\n", blockId, iter);
                 }
             }
         }
@@ -154,6 +153,7 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
                 arrive(&emptyV[qidx]);
             }
         }
+        int q = 0;
         int p = 0;
         int qidx = 0;
 
@@ -198,7 +198,8 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
             curandStatePhilox4_32_10_t local_state;
             if constexpr (Is_dropout) { local_state = param.states[blockId]; }
 
-            wait(fullQ, p);
+            wait(fullQ, q);
+            q ^= 1;
 
             const float alibi_slope = !Has_alibi ? 0.0f : param.alibi_slopes_ptr[seq_id];
             
@@ -230,10 +231,7 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
                         }
                     }
                 }
-                if (threadIdx.x == 128) {printf("calculate Q*K\n");};
-                if (threadIdx.x == 128) {
-                    printf("c_frag: %f %f %f %f\n", c_frag[0][0][0], c_frag[0][0][1], c_frag[0][0][2], c_frag[0][0][3]);
-                }
+
                 if (tid == 0){
                     if (iter == n_block_max - 1)    arrive(emptyQ);
                     arrive(&emptyK[qidx]);
@@ -245,7 +243,6 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
                 );
 
                 apply_softmax<num_consumers, Br, Bc>(c_frag, row_m_prev, row_m, row_l, row_l_prev);
-                if (threadIdx.x == 128) {printf("calculate softmax\n");};
 
                 if constexpr (Is_dropout) {
                     #pragma unroll
@@ -255,7 +252,7 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
                             #pragma unroll
                             for (int k = 0; k < 4; k++) {
                                 float rand_val = curand_uniform(&local_state);
-                    
+
                                 if (rand_val < param.dropout_prob) {
                                     c_frag[i][j][k] = 0.0f;
                                 } else {
@@ -265,7 +262,6 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
                         }
                     }
                 }
-                if (threadIdx.x == 128) {printf("calculate dropout\n");};
 
                 // 转换矩阵 P 的类型，为了后续的 tensor core 矩阵乘
                 #pragma unroll
@@ -309,7 +305,8 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
                         o_frag[m][n][3] = o_frag[m][n][3] * __expf(row_m_prev[m][1] - row_m[m][1]) + c_frag[0][0][3];
                     }
                 }
-                if (threadIdx.x == 128) {printf("calculate P*V\n");};
+
+                if (blockId ==0 && threadIdx.x == 128)    printf("%f %f %f %f\n", __half2float(o_frag[0][0][0]), __half2float(o_frag[0][0][1]), __half2float(o_frag[0][0][2]), __half2float(o_frag[0][0][3]));
 
                 if (tid == 0) {
                     arrive(&emptyV[qidx]);
@@ -317,7 +314,7 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
 
                 // 更新最大值与和
                 #pragma unroll
-                for (int i = 0; i < Br/num_consumers/NUMWARPPERGROUP/MMA_M; i++) {
+                for (int i = 0; i < Br / num_consumers / NUMWARPPERGROUP / MMA_M; i++) {
                     row_m_prev[i][0] = row_m[i][0];
                     row_m_prev[i][1] = row_m[i][1];
                     row_l_prev[i][0] = row_l[i][0];
@@ -338,8 +335,8 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
             }
 
             // 将 O 保存至共享内存
-            half* block_sO = sO + warp_id*Br/num_consumers/NUMWARPPERGROUP*d;
-            uint32_t tid_offset = lane_id % 16 * d + lane_id / 16 * 8;
+            half* block_sO = sO + warp_group_role * Br / num_consumers * d;
+            uint32_t tid_offset = warp_id % NUMWARPPERGROUP * Br / num_consumers / NUMWARPPERGROUP * d + lane_id % 16 * d;
             uint32_t base_addr = static_cast<uint32_t>(__cvta_generic_to_shared(block_sO)) + tid_offset * sizeof(half);
 
             half o_frag_half[4];
@@ -347,8 +344,8 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
             #pragma unroll
             for (int m = 0; m < Br/num_consumers/NUMWARPPERGROUP/MMA_M; m++) {
                 #pragma unroll
-                for (int n = 0; n < d/MMA_N; n++) {
-                    uint32_t addr = base_addr + (m * MMA_M * d + n * MMA_N);
+                for (int n = 0; n < d / MMA_N; n++) {
+                    uint32_t addr = base_addr + (m * MMA_M * d + n * MMA_N) * sizeof(half);
                     #pragma unroll
                     for (int k = 0; k < 4; k++) {
                         o_frag_half[k] = __float2half(o_frag[m][n][k]);
@@ -357,14 +354,12 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
                                 :: "r"(addr), "r"(data_ptr[0]), "r"(data_ptr[1]));
                 }
             }
-            if (threadIdx.x == 128) {printf("store O to shm\n");};
 
             asm volatile("bar.sync %0, 128;\n" ::"r"(warp_group_role + 2) : "memory");
             if (tid == 0) {
-                store_async(&tensorMapO, block_sO, blockId * Br, 0);
+                store_async(&tensorMapO, block_sO, 0, blockId * Br + warp_group_role * Br / num_consumers);
                 asm volatile("cp.async.bulk.commit_group;");
             }
-            if (threadIdx.x == 128) {printf("store O to global\n");};
 
             if constexpr (Is_dropout) {
                 param.states[blockId] = local_state;
@@ -372,6 +367,7 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
         }
     }
 }
+
 
 template<int Br, int Bc, int NUM_SM, int NUM_THREADS, int NUM_CONSUMERS, int QSIZE>
 void run_kernel(mykernelParamType param, bool Is_dropout, bool Is_causal, bool Is_local, bool Has_alibi) {
@@ -383,7 +379,7 @@ void run_kernel(mykernelParamType param, bool Is_dropout, bool Is_causal, bool I
             d_tma_map_Q = create_tensor_map<Br, 64>(param.Q, param.B*param.N*param.S, 64);
             d_tma_map_K = create_tensor_map<Bc, 64>(param.K, param.B*param.N*param.S, 64);
             d_tma_map_V = create_tensor_map<Bc, 64>(param.V, param.B*param.N*param.S, 64);
-            d_tma_map_O = create_tensor_map<64, Br / NUM_CONSUMERS, false, true>(param.O, 64, param.B*param.N*param.S);
+            d_tma_map_O = create_tensor_map<Br / NUM_CONSUMERS, 64, false, false>(param.O, param.B*param.N*param.S, 64);
             _prev_B = param.B;
             _prev_N = param.N;
             _prev_S = param.S;
@@ -490,7 +486,7 @@ void run_kernel(mykernelParamType param, bool Is_dropout, bool Is_causal, bool I
             d_tma_map_Q = create_tensor_map<Br, 96>(param.Q, param.B*param.N*param.S, 96);
             d_tma_map_K = create_tensor_map<Bc, 96>(param.K, param.B*param.N*param.S, 96);
             d_tma_map_V = create_tensor_map<Bc, 96>(param.V, param.B*param.N*param.S, 96);
-            d_tma_map_O = create_tensor_map<96, Br / NUM_CONSUMERS, false, true>(param.O, 96, param.B*param.N*param.S);
+            d_tma_map_O = create_tensor_map<Br / NUM_CONSUMERS, 96, false, false>(param.O, param.B*param.N*param.S, 96);
             _prev_B = param.B;
             _prev_N = param.N;
             _prev_S = param.S;
@@ -597,7 +593,7 @@ void run_kernel(mykernelParamType param, bool Is_dropout, bool Is_causal, bool I
             d_tma_map_Q = create_tensor_map<Br, 128>(param.Q, param.B*param.N*param.S, 128);
             d_tma_map_K = create_tensor_map<Bc, 128>(param.K, param.B*param.N*param.S, 128);
             d_tma_map_V = create_tensor_map<Bc, 128>(param.V, param.B*param.N*param.S, 128);
-            d_tma_map_O = create_tensor_map<128, Br / NUM_CONSUMERS, false, true>(param.O, 128, param.B*param.N*param.S);
+            d_tma_map_O = create_tensor_map<Br / NUM_CONSUMERS, 128, false, false>(param.O, param.B*param.N*param.S, 128);
             _prev_B = param.B;
             _prev_N = param.N;
             _prev_S = param.S;
