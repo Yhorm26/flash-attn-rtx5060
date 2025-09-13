@@ -162,15 +162,11 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(mykernelParamType param, cons
         float row_l[Br/num_consumers/NUMWARPPERGROUP/MMA_M][2];
         float row_m[Br/num_consumers/NUMWARPPERGROUP/MMA_M][2];
 
-        const int tile_size = Bc * d;
-
         uint32_t a_frag[MMA_M*MMA_K/WARP_SIZE];
         uint32_t b_frag[MMA_K*MMA_N/WARP_SIZE];
         float    c_frag[Br/num_consumers/NUMWARPPERGROUP/MMA_M][Bc/MMA_N][4];
         uint32_t d_frag[Br/num_consumers/NUMWARPPERGROUP/MMA_M][Bc/MMA_N/2][4];
         float    o_frag[Br/num_consumers/NUMWARPPERGROUP/MMA_M][d/MMA_N][4];
-
-        float sS[Br*Bc/num_consumers/128];
 
         int n_block_min, n_block_max, blockId = 0, seq_id;
         while (schedule.next(blockId, n_block_min, n_block_max, seq_id)) {
@@ -777,5 +773,6 @@ void run_flash_attention(
 }
 
 #endif
+
 
 
