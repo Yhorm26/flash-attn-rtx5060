@@ -65,7 +65,7 @@ struct Schedule<0, Br, Bc, Is_causal, Is_local> {
 };
 
 template <int Br, int Bc, int d, int QSIZE>
-struct alignas(128) SMem {
+struct SMem {
     alignas(128) half Q[Br*d];
     alignas(128) half K[d*Bc*QSIZE];
     alignas(128) half V[d*Bc*QSIZE];
@@ -83,7 +83,7 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(const __grid_constant__ CUten
     int warp_group_role = threadIdx.x / 128;
     int warp_id = threadIdx.x / WARP_SIZE, lane_id = threadIdx.x % WARP_SIZE;
 
-    extern __shared__ alignas(128) uint8_t shared_mem[];
+    extern __shared__  uint8_t shared_mem[];
     SMem<Br, Bc, d, QSIZE> &s = *reinterpret_cast<SMem<Br, Bc, d, QSIZE>*>(shared_mem);
     
     half *sQ = s.Q, *sK = s.K, *sV = s.V, *sO = s.O;
@@ -171,16 +171,7 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(const __grid_constant__ CUten
         int n_block_min, n_block_max, blockId, seq_id;
         while (schedule.next(blockId, n_block_min, n_block_max, seq_id)) {
             // 初始化结果
-            #pragma unroll
-            for (int m = 0; m < Br/num_consumers/NUMWARPPERGROUP/MMA_M; m++) {
-                #pragma unroll
-                for (int n = 0; n < d/MMA_N; n++) {
-                    o_frag[m][n][0] = 0.0f;
-                    o_frag[m][n][1] = 0.0f;
-                    o_frag[m][n][2] = 0.0f;
-                    o_frag[m][n][3] = 0.0f;
-                }
-            }
+            memset(o_frag, 0, sizeof(o_frag));
 
             #pragma unroll
             for (int i = 0; i < Br/num_consumers/NUMWARPPERGROUP/MMA_M; i++) {
@@ -662,6 +653,4 @@ void run_flash_attention(
     printf("TIME: %f\n", time_elapsed);
 }
 
-#endif
-
-
+#endif // FLASH_FORWARD_H

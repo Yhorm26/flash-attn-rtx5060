@@ -197,4 +197,3 @@ __device__ __forceinline__ uint32_t pack_2float_to_1uint32(float num1, float num
     return (static_cast<uint32_t>(b_bits) << 16u) | a_bits;
 }
 #endif // UTILS_H
-

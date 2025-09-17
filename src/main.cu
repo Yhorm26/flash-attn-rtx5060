@@ -24,10 +24,10 @@ int main(){
     int  seq_len          = 2048;
     int  head_dim         = 64;
 
-    bool dropout          = false;
-    bool causal_mask      = true;
+    bool dropout          = true;
+    bool causal_mask      = false;
     bool window_attention = false;
-    bool alibi            = true;
+    bool alibi            = false;
     float dropout_prob    = 0.0f;
     int window_size       = -1;
 
@@ -96,7 +96,7 @@ int main(){
     }
 
     // GPU端计算结果
-    run_flash_attention(batch_size, n_heads, seq_len, head_dim, Q_device, K_device, V_device, O_device, nullptr, nullptr, dropout, causal_mask, window_attention, alibi, window_size, alibi_slopes_device, dropout_prob);
+    run_flash_attention(batch_size, n_heads, seq_len, head_dim, Q_device, K_device, V_device, O_device, nullptr, nullptr, dropout, causal_mask, window_attention, alibi, window_size, alibi_slopes_device, dropout_prob, d_states);
 
     cudaMemcpy(O_host, O_device, batch_size*n_heads*seq_len*head_dim*sizeof(half), cudaMemcpyDeviceToHost);
     // 检验结果正确性
