@@ -349,6 +349,8 @@ void __launch_bounds__(NUM_THREADS) forward_kernel(const __grid_constant__ CUten
                 }
             }
 
+            asm volatile("fence.proxy.async.shared::cta;\n" : :);
+
             // 将 O 加载至全局内存
             asm volatile("bar.sync %0, 128;\n" ::"r"(warp_group_role + 2) : "memory");
             if (tid == 0) {
@@ -652,5 +654,6 @@ void run_flash_attention(
 
     printf("TIME: %f\n", time_elapsed);
 }
+
 
 #endif // FLASH_FORWARD_H
