@@ -24,7 +24,7 @@ int main(){
     int  seq_len          = 2048;
     int  head_dim         = 64;
 
-    bool dropout          = true;
+    bool dropout          = false;
     bool causal_mask      = false;
     bool window_attention = false;
     bool alibi            = false;

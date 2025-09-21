@@ -370,6 +370,9 @@ template<int Br, int Bc, int NUM_THREADS, int NUM_CONSUMERS, int QSIZE>
 void run_kernel(mykernelParamType param, int num_sm,bool Is_dropout, bool Is_causal, bool Is_local, bool Has_alibi) {
     dim3 grid(num_sm);
     dim3 block(NUM_THREADS);
+    int max_smem = 0;
+    cudaDeviceGetAttribute(&max_smem, cudaDevAttrMaxSharedMemoryPerBlockOptin, 0);
+    // printf("max_smem = %d\n", max_smem);
 
     if (param.d == 64) {
         d_tma_map_Q = create_tensor_map<Br, 64>(param.Q, param.B*param.N*param.S, 64);
@@ -378,7 +381,10 @@ void run_kernel(mykernelParamType param, int num_sm,bool Is_dropout, bool Is_cau
         d_tma_map_O = create_tensor_map<Br / NUM_CONSUMERS, 64, false, false>(param.O, param.B*param.N*param.S, 64);
 
         constexpr size_t sMemSize = sizeof(SMem<Br, Bc, 64, QSIZE>);
-        static_assert(sMemSize < 256 * 1024);
+        if (!(sMemSize < max_smem)) {
+            printf("smem size exceed the limit: sMemSize=%zu, max_smem=%d\n", sMemSize, max_smem);
+            abort();
+        }
 
         if (Is_dropout) {
             if (Is_causal) {
@@ -480,7 +486,10 @@ void run_kernel(mykernelParamType param, int num_sm,bool Is_dropout, bool Is_cau
         d_tma_map_O = create_tensor_map<Br / NUM_CONSUMERS, 128, false, false>(param.O, param.B*param.N*param.S, 128);
 
         constexpr size_t sMemSize = sizeof(SMem<Br, Bc, 64, QSIZE>);
-        static_assert(sMemSize < 256 * 1024);
+        if (!(sMemSize < max_smem)) {
+            printf("smem size exceed the limit: sMemSize=%zu, max_smem=%d\n", sMemSize, max_smem);
+            abort();
+        }
 
         if (Is_dropout) {
             if (Is_causal) {
@@ -612,9 +621,9 @@ void run_flash_attention(
     constexpr int NUM_SM = 1;
     constexpr int NUM_THREADS = 128*3;
     constexpr int Br = 128;
-    constexpr int Bc = 256;
+    constexpr int Bc = 128;
     constexpr int NUM_CONSUMERS = (NUM_THREADS / 128) - 1;
-    constexpr int QSIZE = 1;
+    constexpr int QSIZE = 2;
 
     mykernelParamType param;
     param.Q                 = Q;
